@@ -6,10 +6,7 @@ import tifffile as tiff
 from batchgenerators.utilities.file_and_folder_operations import join
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
-import sys
-sys.path.append("/mmfs1/data/liupen/project/MitoSeg/MitoVerse")
 
-from post_processing import remove_single_slice_labels,filter_small_connected_components, filter_3d_segmentation_per_slice
 
 def init_predictor():
     
@@ -26,9 +23,9 @@ def init_predictor():
     )
     # initializes the network architecture, loads the checkpoint
     predictor.initialize_from_trained_model_folder(
-        join(nnUNet_results, 'Dataset002_MitoSeg/nnUNetTrainer__nnUNetPlans__2d'),
+        join(nnUNet_results, 'Dataset014_mitolab/nnUNetTrainer__nnUNetPlans__2d'),
         use_folds=('all',),
-        checkpoint_name='checkpoint_final.pth',
+        checkpoint_name='checkpoint_best.pth',
     )
     
     return predictor
@@ -57,23 +54,11 @@ def pred_mito(predictor, img, save_name):
     for i in range(img.shape[0]):
         pred[i] = np.squeeze(ret[i][0])
     
-    # convert prob to a 3d image
-    # prob = np.zeros((img.shape[0], img.shape[1], img.shape[2]), dtype=np.float32)
-    # for i in range(img.shape[0]):
-    #     prob[i] = np.squeeze(ret[i][1][1])
-
-    # do post processing
-    tiff.imwrite(save_name, pred)
-    pred = filter_3d_segmentation_per_slice(pred)
-    tiff.imwrite(save_name, pred)
-    pred = filter_small_connected_components(pred)
-    pred = remove_single_slice_labels(pred, 10)
-    # save the prediction
     if pred.max() > 256:
         pred = pred.astype(np.uint16)
     if pred.max() < 256:
         pred = pred.astype(np.uint8)
-    tiff.imwrite(save_name, pred)
+    tiff.imwrite(save_name, pred, compression="zlib")
     #tiff.imwrite(save_name.replace('.tif', '_prob.tif'), prob)
 def main():
     parser = argparse.ArgumentParser()

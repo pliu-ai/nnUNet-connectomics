@@ -102,6 +102,7 @@ ENV/
 *.nii.gz
 *.nii
 *.tif
+*tiff
 *.bmp
 *.pkl
 *.xml
