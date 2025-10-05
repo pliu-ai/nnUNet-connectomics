@@ -182,8 +182,9 @@ def plan_and_preprocess_entry():
     # experiment planning
     print('Experiment planning...')
     plans_identifier = plan_experiments(args.d, args.pl, args.gpu_memory_target, args.preprocessor_name,
-                                        args.overwrite_target_spacing, args.overwrite_plans_name)
+                                       args.overwrite_target_spacing, args.overwrite_plans_name)
 
+    #plans_identifier = "nnUNetPlans"
     # manage default np
     if args.np is None:
         default_np = {"2d": 8, "3d_fullres": 4, "3d_lowres": 8}

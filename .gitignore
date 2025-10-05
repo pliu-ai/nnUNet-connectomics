@@ -113,4 +113,12 @@ ENV/
 
 *.model
 
+# Ignore DATASET folder contents but keep folder structure
+DATASET/nnUNet_preprocessed/*
+DATASET/nnUNet_raw/*
+DATASET/nnUNet_trained_models/*
+!DATASET/nnUNet_preprocessed/.gitkeep
+!DATASET/nnUNet_raw/.gitkeep
+!DATASET/nnUNet_trained_models/.gitkeep
+
 !documentation/assets/scribble_example.png

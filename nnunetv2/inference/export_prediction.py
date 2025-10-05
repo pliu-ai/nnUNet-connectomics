@@ -1,6 +1,7 @@
 import os
 from copy import deepcopy
 from typing import Union, List
+import tifffile as tiff
 
 import numpy as np
 import torch
@@ -86,6 +87,8 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         dataset_json_dict_or_file = load_json(dataset_json_dict_or_file)
 
     label_manager = plans_manager.get_label_manager(dataset_json_dict_or_file)
+    print(f"predicted_array_or_file shape: {predicted_array_or_file.shape}")
+    #save_probabilities = False
     ret = convert_predicted_logits_to_segmentation_with_correct_shape(
         predicted_array_or_file, plans_manager, configuration_manager, label_manager, properties_dict,
         return_probabilities=save_probabilities
@@ -101,7 +104,6 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
     else:
         segmentation_final = ret
         del ret
-
     rw = plans_manager.image_reader_writer_class()
     rw.write_seg(segmentation_final, output_file_truncated + dataset_json_dict_or_file['file_ending'],
                  properties_dict)
