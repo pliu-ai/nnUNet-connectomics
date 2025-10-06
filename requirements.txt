@@ -1,0 +1,4 @@
+connected-components-3d==3.24.0
+empanada-napari==1.2
+-e git+https://github.com/PytorchConnectomics/em_util.git@8cc736ffb2a59bf4a8232e0c15ee8a5527935a76#egg=em_util
+scipy==1.11.4
