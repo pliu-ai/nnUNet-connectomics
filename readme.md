@@ -3,7 +3,9 @@
 ```bash
 git clone https://github.com/luckieucas/nnUNet-connectomics.git
 cd nnUNet-connectomics
+conda create -n nnunet python=3.12
 pip install -e .
+pip install -r requirements.txt
 ```
 
 ## Model download
