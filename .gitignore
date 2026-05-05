@@ -54,6 +54,7 @@ coverage.xml
 local_settings.py
 logs/
 slurm/
+submit_*.sh
 
 # Flask stuff:
 instance/
