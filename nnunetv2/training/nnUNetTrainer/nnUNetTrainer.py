@@ -146,10 +146,10 @@ class nnUNetTrainer(object):
         ### Some hyperparameters for you to fiddle with
         self.initial_lr = 1e-2
         self.weight_decay = 3e-5
-        self.oversample_foreground_percent = 0.33
+        self.oversample_foreground_percent = 0.66
         self.num_iterations_per_epoch = 250
         self.num_val_iterations_per_epoch = 50
-        self.num_epochs = 1000
+        self.num_epochs = 3000
         self.current_epoch = 0
         self.enable_deep_supervision = True
 
@@ -1181,7 +1181,14 @@ class nnUNetTrainer(object):
             self.initialize()
 
         if isinstance(filename_or_checkpoint, str):
-            checkpoint = torch.load(filename_or_checkpoint, map_location=self.device)
+            # PyTorch 2.6 changed torch.load default weights_only=True, but nnUNet
+            # checkpoints contain optimizer/logger states that require full unpickling.
+            try:
+                checkpoint = torch.load(filename_or_checkpoint, map_location=self.device, weights_only=False)
+            except TypeError:
+                checkpoint = torch.load(filename_or_checkpoint, map_location=self.device)
+        else:
+            checkpoint = filename_or_checkpoint
         # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
         # match. Use heuristic to make it match
         new_state_dict = {}

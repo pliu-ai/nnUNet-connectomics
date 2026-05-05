@@ -154,3 +154,71 @@ class DC_and_topk_loss(nn.Module):
 
         result = self.weight_ce * ce_loss + self.weight_dice * dc_loss
         return result
+
+
+class DC_CE_Partial_MergeProb_loss(nn.Module):
+    """
+    for partial data, this loss first convert logits to prob and 
+    merge prob to background class
+    """
+    def __init__(self, soft_dice_kwargs, ce_kwargs, aggregate="sum", 
+                 weight_ce=1, weight_dice=1,ignore_label=255,ex=True,
+                 dice_class=SoftDiceLoss):
+        super(DC_CE_Partial_MergeProb_loss, self).__init__()
+        if ignore_label is not None:
+            ce_kwargs['ignore_index'] = ignore_label
+        self.ignore_label = ignore_label
+        self.aggregate = aggregate
+        self.ce = RobustCrossEntropyLoss(**ce_kwargs)
+        #self.ce = nn.NLLLoss()
+        #self.dc = dice_class(apply_nonlin=None, **soft_dice_kwargs)
+        self.dc = dice_class(apply_nonlin=softmax_helper_dim1, **soft_dice_kwargs)
+        self.ex_choice = ex
+        self.weight_ce = 0
+        self.weight_dice = weight_dice
+        self.apply_nonlin = softmax_helper_dim1
+        print(f"mode:{aggregate}/ weight:[1:1] with exclusion:{ex}")
+
+    def forward(self, net_output, target, partial_type):
+        new_net_output, new_target = net_output.clone(), target.clone()
+        class_num = net_output.shape[1]
+        if len(partial_type) < class_num-1:
+            new_net_output, new_target = merge_prediction_max(new_net_output,
+                                                           new_target,
+                                                           partial_type)
+        # filter other class output 
+        dc_loss = self.dc(new_net_output, new_target)
+        ce_loss = self.ce(new_net_output, new_target)
+        # ce_loss = self.ce(torch.log(new_net_output_soft), 
+        #                   new_target.squeeze().type(torch.cuda.LongTensor))
+        if self.aggregate == "sum":
+            result = ce_loss + dc_loss
+        elif self.aggregate == "ce":
+            result = ce_loss
+        elif self.aggregate == "dc":
+            result = dc_loss
+        else:
+            # reserved for other stuff (later?)
+            raise NotImplementedError("nah son")
+        return result
+
+
+
+def merge_prediction_max(output, target, partial_type):
+    '''
+        cur_task: GT task
+        default_task: net_output task
+    '''
+    
+    try:
+        merge_classes = [item for item in range(0,5) if item not in partial_type]
+    except:
+        print(f"partial error:{partial_type}")
+    #print(f"merge prediction partial type: {partial_type}, merge classes: {merge_classes}")
+    merge_output_bg, _ = output[:, merge_classes, :, :].max(dim=1, keepdim=True)
+    output_fg = output[:, partial_type, :, :]
+    new_output = torch.cat([merge_output_bg, 
+                            output_fg], dim=1)
+    for i,label in enumerate(partial_type):
+        target[target==label] = i+1
+    return new_output, target

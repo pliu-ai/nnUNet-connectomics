@@ -8,7 +8,13 @@ class PolyLRScheduler(_LRScheduler):
         self.max_steps = max_steps
         self.exponent = exponent
         self.ctr = 0
-        super().__init__(optimizer, current_step if current_step is not None else -1, False)
+        last_epoch = (current_step if current_step is not None else -1)
+        try:
+            # Old-style API with verbose kw (older PyTorch)
+            super().__init__(optimizer, last_epoch, verbose=False)
+        except TypeError:
+            # New-style API without verbose arg (newer PyTorch)
+            super().__init__(optimizer, last_epoch)
 
     def step(self, current_step=None):
         if current_step is None or current_step == -1:

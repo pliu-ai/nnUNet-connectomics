@@ -50,7 +50,6 @@ def save_image(image_array: np.ndarray, file_path: str, affine_matrix: Optional[
         affine_matrix: Affine transformation matrix (for NIfTI files)
     """
     file_ext = os.path.splitext(file_path)[1].lower()
-    
     if file_ext == '.gz':
         # Handle .nii.gz files
         file_ext = os.path.splitext(os.path.splitext(file_path)[0])[1].lower()
@@ -90,7 +89,7 @@ def watershed_3d(binary_mask: np.ndarray,
         3D labeled segmentation mask
     """
     # Ensure binary mask
-    binary_mask = (binary_mask > 0).astype(np.uint8)
+    binary_mask = (binary_mask == 1).astype(np.uint8)
     
     # Apply Gaussian blur to smooth the mask
     if sigma > 0:
@@ -172,7 +171,7 @@ def process_folder(input_folder: str,
     Args:
         input_folder: Input folder containing binary mask files
         output_folder: Output folder for segmentation results
-        file_pattern: File pattern to match (e.g., "*.nii.gz", "*.tiff")
+        file_pattern: File pattern to match (e.g., "*.nii.gz", "*.tiff"), or "auto" to search all supported formats
         min_distance: Minimum distance between seeds
         sigma: Gaussian blur sigma for distance transform
         min_size: Minimum size of objects to keep
@@ -182,12 +181,20 @@ def process_folder(input_folder: str,
     
     os.makedirs(output_folder, exist_ok=True)
     
-    # Find all matching files
-    search_pattern = os.path.join(input_folder, file_pattern)
-    input_files = glob.glob(search_pattern)
+    # If pattern is "auto", search for all supported formats
+    if file_pattern == "auto":
+        patterns = ["*.nii.gz", "*.tiff", "*.tif"]
+        input_files = []
+        for pattern in patterns:
+            search_pattern = os.path.join(input_folder, pattern)
+            input_files.extend(glob.glob(search_pattern))
+    else:
+        # Find all matching files
+        search_pattern = os.path.join(input_folder, file_pattern)
+        input_files = glob.glob(search_pattern)
     
     if not input_files:
-        print(f"No files found matching pattern: {search_pattern}")
+        print(f"No files found in folder: {input_folder}")
         return
     
     print(f"Found {len(input_files)} files to process")
@@ -197,9 +204,11 @@ def process_folder(input_folder: str,
         name, ext = os.path.splitext(filename)
         if ext == '.gz':
             name = os.path.splitext(name)[0]  # Remove .nii from .nii.gz
+            ext = '.nii.gz'  # Keep full extension for output
         
         output_file = os.path.join(output_folder, f"{name}_watershed{ext}")
         
+        print(f"\nProcessing: {filename}")
         try:
             watershed_from_file(input_file, output_file, min_distance, sigma, min_size, connectivity)
         except Exception as e:
@@ -213,34 +222,40 @@ def entry_point_watershed():
     
     # Input/Output arguments
     parser.add_argument('-i', '--input', type=str, required=True,
-                       help='Input file or folder path')
+                       help='Input file or folder path (auto-detected)')
     parser.add_argument('-o', '--output', type=str, required=True,
                        help='Output file or folder path')
     
     # Processing parameters
-    parser.add_argument('--min_distance', type=int, default=25,
-                       help='Minimum distance between seeds (default: 5)')
-    parser.add_argument('--sigma', type=float, default=1.0,
+    parser.add_argument('--min_distance', type=int, default=30,
+                       help='Minimum distance between seeds (default: 25)')
+    parser.add_argument('--sigma', type=float, default=2.0,
                        help='Gaussian blur sigma for distance transform (default: 1.0)')
     parser.add_argument('--min_size', type=int, default=200,
-                       help='Minimum size of objects to keep (default: 100)')
+                       help='Minimum size of objects to keep (default: 200)')
     parser.add_argument('--connectivity', type=int, default=6, choices=[6, 26],
                        help='Connectivity for connected components (default: 6)')
     
-    # Folder processing
-    parser.add_argument('--folder', action='store_true',
-                       help='Process entire folder instead of single file')
-    parser.add_argument('--pattern', type=str, default='*.nii.gz',
-                       help='File pattern for folder processing (default: *.nii.gz)')
+    # Folder processing options
+    parser.add_argument('--pattern', type=str, default='auto',
+                       help='File pattern for folder processing (default: auto - searches for .nii.gz, .tiff, .tif)')
     
     args = parser.parse_args()
     
-    if args.folder:
+    # Auto-detect if input is a file or folder
+    if os.path.isdir(args.input):
+        print(f"Detected folder input: {args.input}")
+        print(f"Output folder: {args.output}")
+        print(f"File pattern: {args.pattern}")
         process_folder(args.input, args.output, args.pattern, 
                       args.min_distance, args.sigma, args.min_size, args.connectivity)
-    else:
+    elif os.path.isfile(args.input):
+        print(f"Detected file input: {args.input}")
+        print(f"Output file: {args.output}")
         watershed_from_file(args.input, args.output, 
                            args.min_distance, args.sigma, args.min_size, args.connectivity)
+    else:
+        raise ValueError(f"Input path does not exist: {args.input}")
 
 
 if __name__ == '__main__':

@@ -9,7 +9,12 @@ def recursive_find_python_class(folder: str, class_name: str, current_module: st
     for importer, modname, ispkg in pkgutil.iter_modules([folder]):
         # print(modname, ispkg)
         if not ispkg:
-            m = importlib.import_module(current_module + "." + modname)
+            try:
+                m = importlib.import_module(current_module + "." + modname)
+            except Exception:
+                # Some optional trainer variants in this fork can be stale and fail
+                # to import. Skipping them keeps class discovery robust.
+                continue
             if hasattr(m, class_name):
                 tr = getattr(m, class_name)
                 break

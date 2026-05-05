@@ -13,6 +13,7 @@ from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAu
 from batchgenerators.utilities.file_and_folder_operations import load_json, join, isfile, maybe_mkdir_p, isdir, subdirs, \
     save_json
 from torch import nn
+from torch.nn import functional as F
 from torch._dynamo import OptimizedModule
 from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
@@ -43,7 +44,9 @@ class nnUNetPredictor(object):
                  device: torch.device = torch.device('cuda'),
                  verbose: bool = False,
                  verbose_preprocessing: bool = False,
-                 allow_tqdm: bool = True):
+                 allow_tqdm: bool = True,
+                 inference_padding_mode: str = 'constant',
+                 inference_border_mirror_pad_size: Union[int, Tuple[int, ...], List[int]] = 0):
         self.verbose = verbose
         self.verbose_preprocessing = verbose_preprocessing
         self.allow_tqdm = allow_tqdm
@@ -54,6 +57,19 @@ class nnUNetPredictor(object):
         self.tile_step_size = tile_step_size
         self.use_gaussian = use_gaussian
         self.use_mirroring = use_mirroring
+        requested_padding_mode = str(inference_padding_mode).lower()
+        if requested_padding_mode == 'mirror':
+            requested_padding_mode = 'reflect'
+        if requested_padding_mode not in ('constant', 'reflect'):
+            raise ValueError(
+                f"inference_padding_mode must be one of ('constant', 'reflect', 'mirror'). "
+                f"Got: {inference_padding_mode}"
+            )
+        self.inference_padding_mode = requested_padding_mode
+        self.inference_border_mirror_pad_size = self._normalize_spatial_pad_size(
+            inference_border_mirror_pad_size,
+            3
+        )
         if device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
         else:
@@ -61,6 +77,112 @@ class nnUNetPredictor(object):
             perform_everything_on_device = False
         self.device = device
         self.perform_everything_on_device = perform_everything_on_device
+
+    @staticmethod
+    def _normalize_spatial_pad_size(
+        value: Union[int, Tuple[int, ...], List[int]],
+        num_spatial_dims: int
+    ) -> Tuple[int, ...]:
+        if isinstance(value, int):
+            if value < 0:
+                raise ValueError(f'padding size must be >= 0, got {value}')
+            return tuple([int(value)] * num_spatial_dims)
+
+        if isinstance(value, (tuple, list)):
+            if len(value) == 1:
+                single = int(value[0])
+                if single < 0:
+                    raise ValueError(f'padding size must be >= 0, got {value}')
+                return tuple([single] * num_spatial_dims)
+            if len(value) != num_spatial_dims:
+                raise ValueError(
+                    f'padding size must be int or {num_spatial_dims}-tuple/list, got {value}'
+                )
+            normalized = tuple(int(i) for i in value)
+            if any(i < 0 for i in normalized):
+                raise ValueError(f'padding size must be >= 0, got {value}')
+            return normalized
+
+        raise TypeError(f'unsupported padding size type: {type(value)}')
+
+    def _maybe_apply_border_mirror_padding(self, input_image: torch.Tensor):
+        if not any(self.inference_border_mirror_pad_size):
+            return input_image, None
+
+        # input_image in inference is [C, X, Y, Z]. PyTorch reflect padding only
+        # supports padding the trailing spatial dims, so we pad via a fake batch dim.
+        if isinstance(input_image, torch.Tensor) and input_image.ndim == 4:
+            px, py, pz = (int(i) for i in self.inference_border_mirror_pad_size)
+            c, sx, sy, sz = [int(i) for i in input_image.shape]
+            try:
+                padded = F.pad(
+                    input_image.unsqueeze(0),
+                    (pz, pz, py, py, px, px),
+                    mode='reflect'
+                ).squeeze(0)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed border mirror padding with size {self.inference_border_mirror_pad_size} "
+                    f"for input shape {tuple(input_image.shape)}: {e}"
+                )
+            slicer_revert = (
+                slice(0, c),
+                slice(px, px + sx),
+                slice(py, py + sy),
+                slice(pz, pz + sz),
+            )
+            return padded, slicer_revert
+
+        target_shape = tuple(
+            int(i + 2 * p) for i, p in zip(input_image.shape[1:], self.inference_border_mirror_pad_size)
+        )
+        try:
+            return pad_nd_image(
+                input_image,
+                target_shape,
+                'reflect',
+                None,
+                True,
+                None,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed border mirror padding with size {self.inference_border_mirror_pad_size} "
+                f"for input shape {tuple(input_image.shape)}: {e}"
+            )
+
+    def _pad_for_sliding_window(self, input_image: torch.Tensor):
+        if self.inference_padding_mode == 'constant':
+            return pad_nd_image(
+                input_image,
+                self.configuration_manager.patch_size,
+                'constant',
+                {'value': 0},
+                True,
+                None
+            )
+        try:
+            return pad_nd_image(
+                input_image,
+                self.configuration_manager.patch_size,
+                self.inference_padding_mode,
+                None,
+                True,
+                None
+            )
+        except Exception as e:
+            print(
+                f"Padding mode '{self.inference_padding_mode}' failed ({e}). "
+                "Falling back to constant zero padding."
+            )
+            return pad_nd_image(
+                input_image,
+                self.configuration_manager.patch_size,
+                'constant',
+                {'value': 0},
+                True,
+                None
+            )
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
@@ -631,11 +753,14 @@ class nnUNetPredictor(object):
                     print(f'Input shape: {input_image.shape}')
                     print("step_size:", self.tile_step_size)
                     print("mirror_axes:", self.allowed_mirroring_axes if self.use_mirroring else None)
+                    print("padding_mode:", self.inference_padding_mode)
+                    print("border_mirror_pad_size:", self.inference_border_mirror_pad_size)
+
+                input_image_after_border_pad, slicer_revert_border_padding = \
+                    self._maybe_apply_border_mirror_padding(input_image)
 
                 # if input_image is smaller than tile_size we need to pad it to tile_size.
-                data, slicer_revert_padding = pad_nd_image(input_image, self.configuration_manager.patch_size,
-                                                           'constant', {'value': 0}, True,
-                                                           None)
+                data, slicer_revert_padding = self._pad_for_sliding_window(input_image_after_border_pad)
 
                 slicers = self._internal_get_sliding_window_slicers(data.shape[1:])
 
@@ -656,7 +781,31 @@ class nnUNetPredictor(object):
                 empty_cache(self.device)
                 # revert padding
                 predicted_logits = predicted_logits[(slice(None), *slicer_revert_padding[1:])]
+                if slicer_revert_border_padding is not None:
+                    predicted_logits = predicted_logits[(slice(None), *slicer_revert_border_padding[1:])]
         return predicted_logits
+
+
+def _parse_border_mirror_pad_size_arg(raw_value: str) -> Tuple[int, int, int]:
+    value = str(raw_value).strip()
+    if value == '':
+        raise ValueError('inference_border_mirror_pad_size cannot be empty')
+
+    normalized = value.replace('x', ',').replace('X', ',')
+    parts = [p.strip() for p in normalized.split(',') if p.strip() != '']
+    if len(parts) == 1:
+        v = int(parts[0])
+        if v < 0:
+            raise ValueError(f'inference_border_mirror_pad_size must be >= 0, got {raw_value}')
+        return v, v, v
+    if len(parts) == 3:
+        result = tuple(int(i) for i in parts)
+        if any(i < 0 for i in result):
+            raise ValueError(f'inference_border_mirror_pad_size must be >= 0, got {raw_value}')
+        return result
+    raise ValueError(
+        'inference_border_mirror_pad_size must be one int or three ints like "16,16,16"'
+    )
 
 
 def predict_entry_point_modelfolder():
@@ -707,6 +856,14 @@ def predict_entry_point_modelfolder():
     parser.add_argument('--disable_progress_bar', action='store_true', required=False, default=False,
                         help='Set this flag to disable progress bar. Recommended for HPC environments (non interactive '
                              'jobs)')
+    parser.add_argument('--inference_padding_mode', type=str, required=False, default='constant',
+                        choices=('constant', 'reflect', 'mirror'),
+                        help='Padding mode for sliding-window inference when input is smaller than patch size. '
+                             "Default: 'constant' (zero padding, original nnU-Net behavior). "
+                             "Set to 'reflect'/'mirror' for edge mirroring.")
+    parser.add_argument('--inference_border_mirror_pad_size', type=str, required=False, default='0',
+                        help='Optional border mirror padding size (voxels) applied to the whole input volume before '
+                             'sliding-window inference. Accepts one int (same for xyz) or "x,y,z". Default: 0')
 
     print(
         "\n#######################################################################\nPlease cite the following paper "
@@ -717,6 +874,7 @@ def predict_entry_point_modelfolder():
 
     args = parser.parse_args()
     args.f = [i if i == 'all' else int(i) for i in args.f]
+    border_pad_size = _parse_border_mirror_pad_size_arg(args.inference_border_mirror_pad_size)
 
     if not isdir(args.o):
         maybe_mkdir_p(args.o)
@@ -743,7 +901,9 @@ def predict_entry_point_modelfolder():
                                 device=device,
                                 verbose=args.verbose,
                                 allow_tqdm=not args.disable_progress_bar,
-                                verbose_preprocessing=args.verbose)
+                                verbose_preprocessing=args.verbose,
+                                inference_padding_mode=args.inference_padding_mode,
+                                inference_border_mirror_pad_size=border_pad_size)
     predictor.initialize_from_trained_model_folder(args.m, args.f, args.chk)
     predictor.predict_from_files(args.i, args.o, save_probabilities=args.save_probabilities,
                                  overwrite=not args.continue_prediction,
@@ -816,6 +976,14 @@ def predict_entry_point():
     parser.add_argument('--disable_progress_bar', action='store_true', required=False, default=False,
                         help='Set this flag to disable progress bar. Recommended for HPC environments (non interactive '
                              'jobs)')
+    parser.add_argument('--inference_padding_mode', type=str, required=False, default='constant',
+                        choices=('constant', 'reflect', 'mirror'),
+                        help='Padding mode for sliding-window inference when input is smaller than patch size. '
+                             "Default: 'constant' (zero padding, original nnU-Net behavior). "
+                             "Set to 'reflect'/'mirror' for edge mirroring.")
+    parser.add_argument('--inference_border_mirror_pad_size', type=str, required=False, default='0',
+                        help='Optional border mirror padding size (voxels) applied to the whole input volume before '
+                             'sliding-window inference. Accepts one int (same for xyz) or "x,y,z". Default: 0')
 
     print(
         "\n#######################################################################\nPlease cite the following paper "
@@ -826,6 +994,7 @@ def predict_entry_point():
 
     args = parser.parse_args()
     args.f = [i if i == 'all' else int(i) for i in args.f]
+    border_pad_size = _parse_border_mirror_pad_size_arg(args.inference_border_mirror_pad_size)
 
     model_folder = get_output_folder(args.d, args.tr, args.p, args.c)
 
@@ -857,7 +1026,9 @@ def predict_entry_point():
                                 device=device,
                                 verbose=args.verbose,
                                 verbose_preprocessing=args.verbose,
-                                allow_tqdm=not args.disable_progress_bar)
+                                allow_tqdm=not args.disable_progress_bar,
+                                inference_padding_mode=args.inference_padding_mode,
+                                inference_border_mirror_pad_size=border_pad_size)
     predictor.initialize_from_trained_model_folder(
         model_folder,
         args.f,

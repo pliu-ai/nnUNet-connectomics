@@ -69,3 +69,10 @@ import numpy as np
 binary_mask = np.random.randint(0, 2, (100, 100, 100))
 segmentation = watershed_3d(binary_mask, min_distance=5, sigma=1.0, min_size=100)
 ```
+
+
+
+
+
+
+

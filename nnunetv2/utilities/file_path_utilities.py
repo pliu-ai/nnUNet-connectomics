@@ -108,6 +108,22 @@ def check_workers_alive_and_busy(export_pool: Pool, worker_list: List, results_l
     return False
 
 
+def check_workers_busy(export_pool: Pool, results_list: List, allowed_num_queued: int = 0):
+    """
+    Backward-compatible wrapper used by older trainer variants.
+
+    Old call sites pass only (pool, results_list, allowed_num_queued). The
+    newer implementation also validates worker liveness via
+    `check_workers_alive_and_busy`.
+    """
+    worker_list = getattr(export_pool, "_pool", None)
+    if worker_list is None:
+        # Fallback for unexpected pool implementations.
+        not_ready = [not i.ready() for i in results_list]
+        return sum(not_ready) >= allowed_num_queued
+    return check_workers_alive_and_busy(export_pool, worker_list, results_list, allowed_num_queued)
+
+
 if __name__ == '__main__':
     ### well at this point I could just write tests...
     path = '/home/fabian/results/nnUNet_remake/Dataset002_Heart/nnUNetModule__nnUNetPlans__3d_fullres'
